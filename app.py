@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-VALON PC Agent System - Production Deployment
-Advanced AI Agent Platform with Real-time Web Interface
+VALON PC Agent System - Cloud Deployment (Render.com/Python 3.13)
+Advanced AI Agent Platform with Real-time Web Interface (Werkzeug/Threading)
 """
 
 import os
@@ -11,7 +11,7 @@ import threading
 import requests
 from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify, redirect, url_for
-from flask_socketio import SocketIO, emit, join_room, leave_room
+from flask_socketio import SocketIO, emit
 import logging
 
 # Production Configuration
@@ -19,8 +19,8 @@ class ProductionConfig:
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'valon-agent-secret-key-2024'
     DEBUG = False
     TESTING = False
-    # SocketIO Configuration
-    SOCKETIO_ASYNC_MODE = 'eventlet'
+    # SocketIO Configuration (NO eventlet/gevent)
+    SOCKETIO_ASYNC_MODE = 'threading'
     SOCKETIO_CORS_ALLOWED_ORIGINS = "*"
     # Agent Configuration
     AGENT_NAME = "VALON"
@@ -31,7 +31,7 @@ class ProductionConfig:
 app = Flask(__name__)
 app.config.from_object(ProductionConfig)
 
-# Initialize SocketIO with production settings
+# Initialize SocketIO (NO eventlet/gevent, use default 'threading')
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Configure logging for production
@@ -238,15 +238,168 @@ VALON Agent Commands:
 # Initialize VALON Agent
 agent = VALONAgent()
 
-# (Web template omitted for brevity. Use your existing WEB_TEMPLATE here.)
+# --------------------------------------
+# ------------- WEB_TEMPLATE -----------
+# --------------------------------------
+WEB_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<!-- ... (your dashboard HTML here, as before) ... -->
+<body>
+    <div class="header">
+        <h1>🤖 VALON Agent Platform</h1>
+        <p>Advanced AI Assistant System - Real-time Command Processing</p>
+    </div>
+    <!-- Rest of your HTML goes here. Omitted for brevity. -->
+</body>
+</html>
+"""
 
-# [Routes and SocketIO events omitted for brevity. Use your existing versions.]
+# ------------- ROUTES & SOCKETIO --------------
+@app.route('/')
+def dashboard():
+    return render_template_string(WEB_TEMPLATE)
 
-# --- At the very bottom ---
+@app.route('/api/status')
+def api_status():
+    uptime = datetime.now() - agent.memory["uptime_start"]
+    return jsonify({
+        "status": "online",
+        "agent_status": agent.status,
+        "uptime": str(uptime),
+        "commands_executed": agent.memory["commands_executed"],
+        "active_users": len(agent.users),
+        "active_sessions": agent.active_sessions,
+        "total_tasks": len(agent.tasks),
+        "version": ProductionConfig.VERSION,
+        "timestamp": datetime.now().isoformat()
+    })
 
+@app.route('/api/execute', methods=['POST'])
+def api_execute():
+    try:
+        data = request.get_json()
+        command = data.get('command', '')
+        user_id = request.remote_addr
+
+        if not command:
+            return jsonify({"success": False, "error": "No command provided"}), 400
+
+        # Add task and execute
+        task = agent.add_task({"command": command, "user": user_id})
+        result = agent.execute_command(command, user_id)
+
+        # Update task status
+        task["status"] = "completed" if result["success"] else "failed"
+        task["result"] = result
+
+        return jsonify({
+            "success": True,
+            "task_id": task["id"],
+            "result": result
+        })
+    except Exception as e:
+        logger.error(f"API execute error: {str(e)}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/tasks')
+def api_tasks():
+    return jsonify({
+        "tasks": agent.tasks[-10:],  # Return last 10 tasks
+        "total_tasks": len(agent.tasks)
+    })
+
+@socketio.on('connect')
+def handle_connect():
+    user_id = request.sid
+    agent.users[user_id] = {
+        "connected_at": datetime.now(),
+        "ip": request.remote_addr,
+        "commands": 0
+    }
+    agent.active_sessions += 1
+    logger.info(f"User {user_id} connected from {request.remote_addr}")
+    emit('status_update', {
+        "status": agent.status,
+        "user_count": len(agent.users),
+        "session_count": agent.active_sessions,
+        "task_count": len(agent.tasks)
+    })
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    user_id = request.sid
+    if user_id in agent.users:
+        del agent.users[user_id]
+        agent.active_sessions = max(0, agent.active_sessions - 1)
+        logger.info(f"User {user_id} disconnected")
+
+@socketio.on('execute_command')
+def handle_execute_command(data):
+    try:
+        command = data.get('command', '')
+        user_id = request.sid
+
+        if not command:
+            emit('command_result', {
+                "success": False,
+                "command": command,
+                "result": "No command provided"
+            })
+            return
+
+        # Update user command count
+        if user_id in agent.users:
+            agent.users[user_id]["commands"] += 1
+
+        # Add task and execute
+        task = agent.add_task({"command": command, "user": user_id})
+        result = agent.execute_command(command, user_id)
+
+        # Update task status
+        task["status"] = "completed" if result["success"] else "failed"
+        task["result"] = result
+
+        # Send result back to client
+        emit('command_result', {
+            "success": result["success"],
+            "command": command,
+            "result": result["result"],
+            "type": result.get("type", "general"),
+            "task_id": task["id"]
+        })
+
+        # Broadcast status update to all clients
+        socketio.emit('status_update', {
+            "status": agent.status,
+            "user_count": len(agent.users),
+            "session_count": agent.active_sessions,
+            "task_count": len(agent.tasks)
+        })
+
+    except Exception as e:
+        logger.error(f"Command execution error: {str(e)}")
+        emit('command_result', {
+            "success": False,
+            "command": data.get('command', ''),
+            "result": f"Error: {str(e)}"
+        })
+
+@socketio.on('get_status')
+def handle_get_status():
+    uptime = datetime.now() - agent.memory["uptime_start"]
+    emit('status_update', {
+        "status": agent.status,
+        "uptime": str(uptime),
+        "commands_executed": agent.memory["commands_executed"],
+        "user_count": len(agent.users),
+        "session_count": agent.active_sessions,
+        "task_count": len(agent.tasks),
+        "version": ProductionConfig.VERSION
+    })
+
+# --- MAIN EXECUTION ---
 if __name__ == '__main__':
-    import eventlet
-    import eventlet.wsgi
     port = int(os.environ.get('PORT', 5000))
-    logger.info(f"Starting VALON Agent on port {port} (eventlet production mode)")
-    socketio.run(app, host='0.0.0.0', port=port)
+    logger.info(f"Starting VALON Agent on port {port} (Werkzeug, threading mode, allow_unsafe_werkzeug=True)")
+    socketio.run(app, host='0.0.0.0', port=port, allow_unsafe_werkzeug=True)
