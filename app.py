@@ -1,4 +1,4 @@
-python#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 VALON PC Agent System - Production Deployment
 Advanced AI Agent Platform with Real-time Web Interface
