@@ -34,15 +34,7 @@ app = Flask(__name__)
 app.config.from_object(ProductionConfig)
 
 # Initialize SocketIO with production settings
-socketio = SocketIO(
-    app, 
-    async_mode='eventlet',
-    cors_allowed_origins="*",
-    logger=False,
-    engineio_logger=False,
-    ping_timeout=60,
-    ping_interval=25
-)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Configure logging for production
 logging.basicConfig(
